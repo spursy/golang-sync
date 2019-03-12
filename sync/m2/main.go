@@ -2,77 +2,129 @@ package main
 
 import (
 	"bytes"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"sync"
+	"time"
 )
 
-// protecting 用于指示是否使用互斥锁来保护数据写入。
-// 若值等于0则表示不使用，若值大于0则表示使用。
-// 改变该变量的值，然后多运行几次程序，并观察程序打印的内容。
-var protecting uint
+// singleHandler 代表单次处理的函数类型
+type singleHandler func() (data string, n int, err error)
 
-func init() {
-	flag.UintVar(&protecting, "protecting", 1,
-		"It indicates whether to use a mutex to protect data writing.")
+// handlerConfig 代表处理流程配置的类型
+type handlerConfig struct {
+	handler singleHandler
+	goNum int
+	number int
+	interval time.Duration
+	counter int
+	counterMu sync.Mutex
+}
+
+func (hc *handlerConfig) count(increment int) int {
+	hc.counterMu.Lock()
+	defer hc.counterMu.Unlock()
+	hc.counter += increment
+	return hc.counter
 }
 
 func main() {
-	flag.Parse()
-	// buffer 代表缓冲区。
+	var mu sync.Mutex
+
+	genWriter := func(writer io.Writer) singleHandler {
+		return func()(data string, n int, err error) {
+			data = fmt.Sprintf("%s\t", time.Now().Format(time.StampNano))
+
+			mu.Lock()
+			defer mu.Unlock()
+			n, err = writer.Write([]byte(data))
+			return
+		}
+	}
+
+	genReader := func(reader io.Reader) singleHandler {
+		return func() (data string, n int, err error) {
+			buffer, ok := reader.(*bytes.Buffer)
+			if !ok {
+				err = errors.New("unsupported reader")
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			data, err = buffer.ReadString('\t')
+			n = len(data)
+			return
+		}
+	}
+
 	var buffer bytes.Buffer
 
-	const (
-		max1 = 5  // 代表启用的goroutine的数量。
-		max2 = 10 // 代表每个goroutine需要写入的数据块的数量。
-		max3 = 10 // 代表每个数据块中需要有多少个重复的数字。
-	)
+	writingConfig := handlerConfig{
+		handler: genWriter(&buffer),
+		goNum: 10,
+		number: 2,
+		interval: time.Millisecond * 100,
+	}
 
-	// mu 代表以下流程要使用的互斥锁。
-	var mu sync.Mutex
-	// sign 代表信号的通道。
-	sign := make(chan struct{}, max1)
+	readingConfig := handlerConfig{
+		handler: genReader(&buffer),
+		goNum: 10,
+		number: 2,
+		interval: time.Millisecond * 100,
+	}
 
-	for i := 1; i <= max1; i++ {
-		go func(id int, writer io.Writer) {
+	sign := make(chan struct{}, writingConfig.goNum+readingConfig.goNum)
+
+
+	for i := 1; i <= writingConfig.goNum; i ++ {
+		go func(i int) {
 			defer func() {
 				sign <- struct{}{}
 			}()
-			for j := 1; j <= max2; j++ {
-				// 准备数据。
-				header := fmt.Sprintf("\n[id: %d, iteration: %d]",
-					id, j)
-				data := fmt.Sprintf(" %d", id*j)
-				// 写入数据。
-				if protecting > 0 {
-					mu.Lock()
-				}
-				_, err := writer.Write([]byte(header))
+			for j := 1; j <= writingConfig.number; j ++ {
+				time.Sleep(writingConfig.interval)
+				data, n, err := writingConfig.handler()
 				if err != nil {
-					log.Printf("error: %s [%d]", err, id)
+					log.Printf("writer [%d-%d]: err: %s", i, j, err)
+					continue
 				}
-				for k := 0; k < max3; k++ {
-					_, err := writer.Write([]byte(data))
-					if err != nil {
-						log.Printf("error: %s [%d]", err, id)
-					}
-				}
-				if protecting > 0 {
-					mu.Unlock()
-				}
+				total := writingConfig.count(n)
+				log.Printf("Writer [%d-%d]: %s (total: %d)", i, j, data, total)
 			}
-		}(i, &buffer)
+		}(i)
 	}
 
-	for i := 0; i < max1; i++ {
+	for i := 0; i < readingConfig.goNum; i++ {
+		go func(i int){
+			defer func() {
+				sign <- struct{}{}
+			}()
+			for j := 1; j <= readingConfig.number; j ++ {
+				time.Sleep(readingConfig.interval)
+				var data string
+				var n int
+				var err error
+				for {
+					data, n, err = readingConfig.handler()
+					if err == nil || err != io.EOF {
+						break
+					}
+					time.Sleep(readingConfig.interval)
+				}
+				if err != nil {
+					log.Printf("reader [%d-%d]: error: %s", i, j, err)
+					continue
+				}
+				total := readingConfig.count(n)
+				log.Printf("reader [%d-%d]: %s (total: %d)", i, j, data, total)
+			}
+		}(i)
+	}
+
+	signNumber := writingConfig.goNum + readingConfig.goNum
+	for j := 0; j < signNumber; j ++ {
 		<-sign
 	}
-	data, err := ioutil.ReadAll(&buffer)
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-	log.Printf("The contents:\n%s", data)
 }
