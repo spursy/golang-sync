@@ -15,14 +15,15 @@ type singleHandler func() (data string, n int, err error)
 
 // handlerConfig 代表处理流程配置的类型
 type handlerConfig struct {
-	handler singleHandler
-	goNum int
-	number int
-	interval time.Duration
-	counter int
-	counterMu sync.Mutex
+	handler singleHandler // 单次处理函数
+	goNum int // 需要启用的goroutine的数量
+	number int  // 单个goroutine中处理的次数
+	interval time.Duration // 单个goroutine中处理的时间间隔
+	counter int // 数据量计数器， 以字节为单位
+	counterMu sync.Mutex // 数据量计数器专用的互斥锁
 }
 
+// count 会增加计数器的值，并会返回增加后的计数
 func (hc *handlerConfig) count(increment int) int {
 	hc.counterMu.Lock()
 	defer hc.counterMu.Unlock()
@@ -31,12 +32,15 @@ func (hc *handlerConfig) count(increment int) int {
 }
 
 func main() {
+	// mu 代表一下流程要使用的互斥锁
+	// 在下面的函数中直接使用即可，不要传递
 	var mu sync.Mutex
 
+	// genWriter 代表的是用于生成读取函数的函数
 	genWriter := func(writer io.Writer) singleHandler {
 		return func()(data string, n int, err error) {
 			data = fmt.Sprintf("%s\t", time.Now().Format(time.StampNano))
-
+			// 读取函数
 			mu.Lock()
 			defer mu.Unlock()
 			n, err = writer.Write([]byte(data))
@@ -44,6 +48,7 @@ func main() {
 		}
 	}
 
+	// genReader 代表的是用于生成读取函数的函数
 	genReader := func(reader io.Reader) singleHandler {
 		return func() (data string, n int, err error) {
 			buffer, ok := reader.(*bytes.Buffer)
@@ -51,6 +56,7 @@ func main() {
 				err = errors.New("unsupported reader")
 				return
 			}
+			// 读取数据
 			mu.Lock()
 			defer mu.Unlock()
 			data, err = buffer.ReadString('\t')
@@ -59,6 +65,7 @@ func main() {
 		}
 	}
 
+	// 代表缓冲区
 	var buffer bytes.Buffer
 
 	writingConfig := handlerConfig{
@@ -77,7 +84,7 @@ func main() {
 
 	sign := make(chan struct{}, writingConfig.goNum+readingConfig.goNum)
 
-
+	// 启用多个goroutine对缓冲区进行多次数据写入
 	for i := 1; i <= writingConfig.goNum; i ++ {
 		go func(i int) {
 			defer func() {
@@ -96,6 +103,7 @@ func main() {
 		}(i)
 	}
 
+	// 启用多个goroutine对缓冲区进行多次数据读取
 	for i := 0; i < readingConfig.goNum; i++ {
 		go func(i int){
 			defer func() {
@@ -111,6 +119,7 @@ func main() {
 					if err == nil || err != io.EOF {
 						break
 					}
+					// 如果读比写快，那就等一会再读
 					time.Sleep(readingConfig.interval)
 				}
 				if err != nil {
@@ -123,7 +132,9 @@ func main() {
 		}(i)
 	}
 
+	// signNumber 代表需要接收的信号的数量
 	signNumber := writingConfig.goNum + readingConfig.goNum
+	// 等待上面启用的所有goroutine的运行全部结束
 	for j := 0; j < signNumber; j ++ {
 		<-sign
 	}
