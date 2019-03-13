@@ -27,7 +27,7 @@ func main() {
 			sign <- struct{}{}
 		}()
 		for i := 1; i <= max; i ++ {
-			time.Sleep(time.Microsecond * 500)
+			time.Sleep(time.Millisecond * 500)
 			lock.Lock()
 			for mailbox == 1 {
 				sendCond.Wait()
