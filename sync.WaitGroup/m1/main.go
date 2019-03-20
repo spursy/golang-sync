@@ -8,9 +8,9 @@ import (
 )
 
 func main() {
-	coordinateWithChan()
+	// coordinateWithChan()
 	fmt.Println()
-	// coordinateWithGroup()
+	coordinateWithGroup()
 }
 
 func coordinateWithChan() {
@@ -22,11 +22,11 @@ func coordinateWithChan() {
 		sign <- struct{}{}
 	})
 
-	// go addNum(&num, 2, max, func() {
-	// 	sign <- struct{}{}
-	// })
+	go addNum(&num, 2, max, func() {
+		sign <- struct{}{}
+	})
 
-	// <-sign
+	<-sign
 	<-sign
 }
 
@@ -38,6 +38,7 @@ func coordinateWithGroup() {
 	max := int32(10)
 	go addNum(&num, 3, max, wg.Done)
 	go addNum(&num, 4, max, wg.Done)
+	wg.Wait()
 }
 
 func addNum(numP *int32, id, max int32, deferFunc func()) {
